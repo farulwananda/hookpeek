@@ -188,3 +188,82 @@ func TestParseDuration(t *testing.T) {
 		t.Errorf("parseDuration(12h) = %v, err=%v", d, err)
 	}
 }
+func TestCLI_Curl(t *testing.T) {
+	tempDir := t.TempDir()
+	store, _ := storage.NewStore(tempDir)
+	ev := createCapturedEvent(t, store, "0123456789abcdef0123456789abcdef", "/hooks/orders", `{"order_id":"123"}`)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"curl", ev.ID, "--to", "http://localhost:3000/webhook", "--header", "X-Api-Key: test-key", "--data-dir", tempDir}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("curl command failed: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "curl -X POST") || !strings.Contains(stdout.String(), "X-Api-Key: test-key") {
+		t.Errorf("unexpected curl output: %s", stdout.String())
+	}
+}
+
+func TestCLI_Diff(t *testing.T) {
+	tempDir := t.TempDir()
+	store, _ := storage.NewStore(tempDir)
+	ev1 := createCapturedEvent(t, store, "11111111111111111111111111111111", "/hooks/orders", `{"status":"pending"}`)
+	ev2 := createCapturedEvent(t, store, "22222222222222222222222222222222", "/hooks/orders", `{"status":"paid"}`)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"diff", ev1.ID, ev2.ID, "--data-dir", tempDir}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("diff command failed: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Comparing Event 1") || !strings.Contains(stdout.String(), "pending") {
+		t.Errorf("unexpected diff output: %s", stdout.String())
+	}
+}
+
+func TestCLI_Verify(t *testing.T) {
+	tempDir := t.TempDir()
+	store, _ := storage.NewStore(tempDir)
+
+	secret := "whsec_supersecret"
+	ev := createCapturedEvent(t, store, "11111111111111111111111111111111", "/hooks/orders", `{"event":"order.paid"}`)
+	ev.Headers["X-My-Signature"] = []string{"valid-signature"}
+	_ = store.Save(ev)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"verify", ev.ID, "--secret", secret, "--header", "X-My-Signature", "--data-dir", tempDir}, &stdout, &stderr)
+	// Mismatch expected since signature was dummy
+	if code != ExitFailure {
+		t.Errorf("expected failure on signature mismatch, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "STATUS:") {
+		t.Errorf("missing STATUS in verify output: %s", stdout.String())
+	}
+}
+
+func TestCLI_ListSearchAndFilter(t *testing.T) {
+	tempDir := t.TempDir()
+	store, _ := storage.NewStore(tempDir)
+
+	createCapturedEvent(t, store, "11111111111111111111111111111111", "/hooks/orders", `{"product":"laptop"}`)
+	createCapturedEvent(t, store, "22222222222222222222222222222222", "/hooks/invoices", `{"product":"phone"}`)
+
+	// Search for laptop
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"list", "--search", "laptop", "--data-dir", tempDir}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("list --search failed: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "/hooks/orders") || strings.Contains(stdout.String(), "/hooks/invoices") {
+		t.Errorf("search results unexpected: %s", stdout.String())
+	}
+
+	// Filter by path
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"list", "--path", "invoices", "--data-dir", tempDir}, &stdout, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("list --path failed: %s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "/hooks/orders") || !strings.Contains(stdout.String(), "/hooks/invoices") {
+		t.Errorf("path filter unexpected: %s", stdout.String())
+	}
+}

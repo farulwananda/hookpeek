@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hookpeek — Webhook Inspector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'Inter', 'sans-serif'],
+            mono: ['"JetBrains Mono"', '"SF Mono"', 'Menlo', 'monospace'],
+          },
+          colors: {
+            apple: {
+              black: '#000000',
+              bg: '#0a0a0c',
+              card: '#1c1c1e',
+              elevated: '#2c2c2e',
+              border: 'rgba(255, 255, 255, 0.08)',
+              blue: '#0071e3',
+              blueHover: '#0077ed',
+              blueLight: '#0a84ff',
+              text: '#f5f5f7',
+              muted: '#86868b',
+              subtle: '#6e6e73'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #000000;
+      color: #f5f5f7;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", sans-serif;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #2c2c2e;
+      border-radius: 9999px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #3a3a3c;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-[#0071e3]/30 selection:text-white">
+
+  <!-- Apple Navigation Bar -->
+  <header class="sticky top-0 z-40 bg-black/80 backdrop-blur-2xl border-b border-white/[0.08]">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-4">
+      
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-xl bg-gradient-to-b from-[#0a84ff] to-[#0071e3] p-[1px] shadow-sm shadow-[#0071e3]/20 flex items-center justify-center">
+          <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="font-semibold text-[15px] tracking-tight text-[#f5f5f7]">Hookpeek</span>
+          <span class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-white/[0.08] text-[#86868b] border border-white/[0.04]">Inspector</span>
+        </div>
+      </div>
+
+      <!-- Live Stream Status Pill -->
+      <div class="flex items-center gap-3">
+        <div id="connectionStatus" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono font-medium">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>Live Stream</span>
+        </div>
+
+        <a 
+          href="https://github.com/farulwananda/hookpeek" 
+          target="_blank"
+          class="px-3 py-1.5 rounded-full bg-white/[0.06] hover:bg-white/[0.1] text-[#86868b] hover:text-[#f5f5f7] text-xs font-medium flex items-center gap-1.5 transition border border-white/[0.04]"
+        >
+          <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
+          </svg>
+          <span class="hidden sm:inline">GitHub</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main View -->
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 flex flex-col lg:flex-row gap-6 min-h-0">
+    
+    <!-- Left Panel: Event Stream List -->
+    <aside class="w-full lg:w-80 shrink-0 flex flex-col gap-3">
+      <!-- Search & Count -->
+      <div class="flex items-center justify-between gap-2">
+        <div class="relative flex-1">
+          <input 
+            type="text" 
+            id="searchInput" 
+            placeholder="Search webhooks... (⌘K)" 
+            class="w-full bg-[#1c1c1e] border border-white/[0.08] rounded-full px-3.5 py-1.5 text-xs text-[#f5f5f7] placeholder-[#86868b] focus:outline-none focus:border-[#0a84ff]"
+          >
+        </div>
+        <span id="eventCountBadge" class="text-xs font-mono text-[#86868b] shrink-0">0 events</span>
+      </div>
+
+      <!-- Events Scroll Area -->
+      <div id="eventList" class="flex-1 flex flex-col gap-1.5 custom-scrollbar overflow-y-auto max-h-[75vh]">
+        <!-- Rendered by JS -->
+      </div>
+    </aside>
+
+    <!-- Right Panel: Event Inspector -->
+    <main class="flex-1 min-w-0 bg-[#1c1c1e] border border-white/[0.08] rounded-3xl p-6 flex flex-col justify-between shadow-sm min-h-[500px]">
+      
+      <!-- Empty state when no event selected -->
+      <div id="inspectorEmptyState" class="m-auto py-24 text-center">
+        <div class="w-12 h-12 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-[#86868b] mx-auto mb-3">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+          </svg>
+        </div>
+        <h3 class="text-sm font-semibold text-[#f5f5f7]">No Webhook Selected</h3>
+        <p class="text-xs text-[#86868b] mt-1 max-w-sm">Select an incoming webhook from the left list or send a webhook to <code class="font-mono text-[#0a84ff]">/hooks/&lt;name&gt;</code>.</p>
+      </div>
+
+      <!-- Detail view -->
+      <div id="inspectorDetails" class="hidden flex-1 flex flex-col gap-5 min-h-0">
+        <!-- Event Header Bar -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-white/[0.08] gap-3">
+          <div>
+            <div class="flex items-center gap-2 mb-1">
+              <span id="selectedMethodBadge" class="text-xs font-mono font-bold px-2 py-0.5 rounded-md bg-[#0071e3]/20 text-[#0a84ff] border border-[#0071e3]/30">POST</span>
+              <span id="selectedPath" class="text-base font-bold text-[#f5f5f7] font-mono truncate max-w-md">/hooks/orders</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px] text-[#86868b] font-mono">
+              <span id="selectedId">id:...</span>
+              <span>•</span>
+              <span id="selectedTime">timestamp</span>
+              <span>•</span>
+              <span id="selectedSize">size</span>
+            </div>
+          </div>
+
+          <!-- Actions: Replay & Copy cURL -->
+          <div class="flex items-center gap-2">
+            <button 
+              id="openReplayBtn" 
+              class="px-4 py-1.5 rounded-full bg-[#0071e3] hover:bg-[#0077ed] text-white text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 shadow-sm"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+              </svg>
+              <span>Replay</span>
+            </button>
+            <button 
+              id="copyCurlBtn" 
+              class="px-3.5 py-1.5 rounded-full bg-[#2c2c2e] hover:bg-[#3a3a3c] text-xs font-medium text-[#f5f5f7] flex items-center gap-1.5 transition border border-white/[0.06]"
+            >
+              <span>Copy cURL</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Inspector Tabs -->
+        <div class="flex bg-[#2c2c2e] p-1 rounded-xl w-fit border border-white/[0.04]">
+          <button id="tabHeadersBtn" class="px-3 py-1 rounded-lg text-xs font-semibold text-white bg-[#3a3a3c] shadow-sm transition">Headers</button>
+          <button id="tabPayloadBtn" class="px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition">Payload</button>
+          <button id="tabRawBtn" class="px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition">Raw</button>
+        </div>
+
+        <!-- Tab 1: Headers -->
+        <div id="tabHeaders" class="flex-1 custom-scrollbar overflow-y-auto">
+          <table class="w-full text-left text-xs font-mono">
+            <thead class="text-[#86868b] border-b border-white/[0.06]">
+              <tr>
+                <th class="py-2 px-1 font-semibold">Header Name</th>
+                <th class="py-2 px-1 font-semibold">Value</th>
+              </tr>
+            </thead>
+            <tbody id="headersTableBody" class="divide-y divide-white/[0.04]">
+              <!-- Injected by JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Tab 2: Formatted Payload -->
+        <div id="tabPayload" class="hidden flex-1 custom-scrollbar overflow-y-auto bg-black/40 p-4 rounded-2xl border border-white/[0.06]">
+          <pre id="payloadViewer" class="text-xs font-mono text-[#d1d1d6] whitespace-pre-wrap leading-relaxed"></pre>
+        </div>
+
+        <!-- Tab 3: Raw Payload -->
+        <div id="tabRaw" class="hidden flex-1 custom-scrollbar overflow-y-auto bg-black/40 p-4 rounded-2xl border border-white/[0.06]">
+          <pre id="rawViewer" class="text-xs font-mono text-[#86868b] whitespace-pre-wrap leading-relaxed"></pre>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Replay Modal Sheet -->
+  <div id="replayModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 hidden">
+    <div id="replayModalBackdrop" class="fixed inset-0 bg-black/70 backdrop-blur-2xl"></div>
+
+    <div class="relative w-full max-w-lg bg-[#1c1c1e] border border-white/[0.1] rounded-3xl p-6 shadow-2xl z-10 flex flex-col gap-4">
+      <div class="flex items-center justify-between pb-3 border-b border-white/[0.08]">
+        <h3 class="text-base font-bold text-[#f5f5f7]">Replay Webhook</h3>
+        <button id="closeReplayModalBtn" class="w-7 h-7 rounded-full bg-[#2c2c2e] hover:bg-[#3a3a3c] text-[#86868b] hover:text-white flex items-center justify-center">
+          ✕
+        </button>
+      </div>
+
+      <form id="replayForm" class="flex flex-col gap-3">
+        <div>
+          <label class="block text-xs font-semibold text-[#86868b] mb-1">Target URL</label>
+          <input 
+            type="url" 
+            id="replayTargetUrl" 
+            placeholder="http://127.0.0.1:3000/api/webhook" 
+            required
+            class="w-full bg-[#2c2c2e] border border-white/[0.08] rounded-xl px-3 py-2 text-xs text-[#f5f5f7] focus:outline-none focus:border-[#0a84ff] font-mono"
+          >
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-[#86868b] mb-1">Custom Header (Optional)</label>
+          <input 
+            type="text" 
+            id="replayHeader" 
+            placeholder="Authorization: Bearer dev-token" 
+            class="w-full bg-[#2c2c2e] border border-white/[0.08] rounded-xl px-3 py-2 text-xs text-[#f5f5f7] focus:outline-none focus:border-[#0a84ff] font-mono"
+          >
+        </div>
+
+        <button 
+          type="submit" 
+          id="sendReplayBtn"
+          class="w-full py-2 bg-[#0071e3] hover:bg-[#0077ed] text-white text-xs font-semibold rounded-full transition shadow-sm"
+        >
+          Send Replay
+        </button>
+      </form>
+
+      <!-- Replay Result Response -->
+      <div id="replayResultBox" class="hidden p-3.5 rounded-2xl bg-black/50 border border-white/[0.06] text-xs font-mono">
+        <div class="flex items-center justify-between mb-1">
+          <span id="replayStatusBadge" class="font-bold"></span>
+          <span id="replayDuration" class="text-[#86868b]"></span>
+        </div>
+        <pre id="replayResponseBody" class="text-[#86868b] max-h-36 overflow-y-auto whitespace-pre-wrap"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let events = [];
+    let selectedEvent = null;
+
+    // DOM
+    const eventList = document.getElementById('eventList');
+    const eventCountBadge = document.getElementById('eventCountBadge');
+    const searchInput = document.getElementById('searchInput');
+    const inspectorEmptyState = document.getElementById('inspectorEmptyState');
+    const inspectorDetails = document.getElementById('inspectorDetails');
+
+    const selectedMethodBadge = document.getElementById('selectedMethodBadge');
+    const selectedPath = document.getElementById('selectedPath');
+    const selectedId = document.getElementById('selectedId');
+    const selectedTime = document.getElementById('selectedTime');
+    const selectedSize = document.getElementById('selectedSize');
+
+    const tabHeadersBtn = document.getElementById('tabHeadersBtn');
+    const tabPayloadBtn = document.getElementById('tabPayloadBtn');
+    const tabRawBtn = document.getElementById('tabRawBtn');
+    const tabHeaders = document.getElementById('tabHeaders');
+    const tabPayload = document.getElementById('tabPayload');
+    const tabRaw = document.getElementById('tabRaw');
+    const headersTableBody = document.getElementById('headersTableBody');
+    const payloadViewer = document.getElementById('payloadViewer');
+    const rawViewer = document.getElementById('rawViewer');
+
+    const openReplayBtn = document.getElementById('openReplayBtn');
+    const copyCurlBtn = document.getElementById('copyCurlBtn');
+    const replayModal = document.getElementById('replayModal');
+    const replayModalBackdrop = document.getElementById('replayModalBackdrop');
+    const closeReplayModalBtn = document.getElementById('closeReplayModalBtn');
+    const replayForm = document.getElementById('replayForm');
+    const replayTargetUrl = document.getElementById('replayTargetUrl');
+    const replayHeader = document.getElementById('replayHeader');
+    const replayResultBox = document.getElementById('replayResultBox');
+    const replayStatusBadge = document.getElementById('replayStatusBadge');
+    const replayDuration = document.getElementById('replayDuration');
+    const replayResponseBody = document.getElementById('replayResponseBody');
+
+    // Fetch Initial Events
+    async function fetchEvents() {
+      try {
+        const res = await fetch('/api/events');
+        if (res.ok) {
+          events = await res.json() || [];
+          renderEventList();
+          if (events.length > 0 && !selectedEvent) {
+            selectEvent(events[0]);
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Connect SSE for Live Stream
+    function connectSSE() {
+      const sse = new EventSource('/api/events/stream');
+      sse.onmessage = (msg) => {
+        try {
+          const ev = JSON.parse(msg.data);
+          // Prepend new event
+          events.unshift(ev);
+          renderEventList();
+          if (!selectedEvent) {
+            selectEvent(ev);
+          }
+        } catch (e) {}
+      };
+      sse.onerror = () => {
+        document.getElementById('connectionStatus').innerHTML = `
+          <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+          <span>Reconnecting</span>
+        `;
+        document.getElementById('connectionStatus').className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-mono font-medium";
+      };
+      sse.onopen = () => {
+        document.getElementById('connectionStatus').innerHTML = `
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>Live Stream</span>
+        `;
+        document.getElementById('connectionStatus').className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono font-medium";
+      };
+    }
+
+    function renderEventList() {
+      const query = searchInput.value.toLowerCase().trim();
+      const filtered = query 
+        ? events.filter(e => e.path.toLowerCase().includes(query) || e.id.toLowerCase().includes(query))
+        : events;
+
+      eventCountBadge.textContent = `${filtered.length} event${filtered.length === 1 ? '' : 's'}`;
+      eventList.innerHTML = '';
+
+      filtered.forEach(ev => {
+        const item = document.createElement('div');
+        const isSelected = selectedEvent && selectedEvent.id === ev.ID;
+        item.className = `p-3 rounded-2xl border transition cursor-pointer flex flex-col gap-1 ${
+          isSelected 
+            ? 'bg-[#0071e3]/15 border-[#0a84ff]/40 shadow-sm' 
+            : 'bg-[#1c1c1e] hover:bg-[#252528] border-white/[0.06]'
+        }`;
+
+        const methodColor = ev.Method === 'POST' ? 'text-[#0a84ff] bg-[#0071e3]/15' : 'text-amber-400 bg-amber-500/15';
+
+        item.innerHTML = `
+          <div class="flex items-center justify-between gap-1.5">
+            <span class="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${methodColor}">${ev.Method}</span>
+            <span class="text-[11px] font-mono text-[#86868b]">${formatTime(ev.CapturedAt)}</span>
+          </div>
+          <span class="text-xs font-mono font-semibold text-[#f5f5f7] truncate">${ev.Path}</span>
+        `;
+
+        item.addEventListener('click', () => selectEvent(ev));
+        eventList.appendChild(item);
+      });
+    }
+
+    function selectEvent(ev) {
+      selectedEvent = ev;
+      inspectorEmptyState.classList.add('hidden');
+      inspectorDetails.classList.remove('hidden');
+
+      selectedMethodBadge.textContent = ev.Method;
+      selectedPath.textContent = ev.Path;
+      selectedId.textContent = `id:${ev.ID.slice(0, 12)}...`;
+      selectedTime.textContent = formatTime(ev.CapturedAt);
+      selectedSize.textContent = `${ev.BodySize} B`;
+
+      replayTargetUrl.value = `http://127.0.0.1:3000${ev.Path}`;
+
+      // Render Headers Table
+      headersTableBody.innerHTML = '';
+      for (const [k, vals] of Object.entries(ev.Headers || {})) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="py-1.5 px-1 font-semibold text-[#86868b]">${k}</td>
+          <td class="py-1.5 px-1 text-[#f5f5f7]">${vals.join(', ')}</td>
+        `;
+        headersTableBody.appendChild(tr);
+      }
+
+      // Decode and Render Payload
+      try {
+        const rawString = atob(ev.BodyBase64 || '');
+        rawViewer.textContent = rawString;
+        try {
+          const parsedJSON = JSON.parse(rawString);
+          payloadViewer.textContent = JSON.stringify(parsedJSON, null, 2);
+        } catch {
+          payloadViewer.textContent = rawString || '[Empty Payload]';
+        }
+      } catch {
+        payloadViewer.textContent = '[Binary or Corrupt Payload]';
+        rawViewer.textContent = '[Binary]';
+      }
+
+      renderEventList();
+    }
+
+    function formatTime(rfc3339) {
+      if (!rfc3339) return '-';
+      const d = new Date(rfc3339);
+      return d.toLocaleTimeString('en-US', { hour12: false });
+    }
+
+    // Tabs
+    tabHeadersBtn.addEventListener('click', () => {
+      tabHeadersBtn.className = "px-3 py-1 rounded-lg text-xs font-semibold text-white bg-[#3a3a3c] shadow-sm transition";
+      tabPayloadBtn.className = "px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition";
+      tabRawBtn.className = "px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition";
+      tabHeaders.classList.remove('hidden');
+      tabPayload.classList.add('hidden');
+      tabRaw.classList.add('hidden');
+    });
+
+    tabPayloadBtn.addEventListener('click', () => {
+      tabPayloadBtn.className = "px-3 py-1 rounded-lg text-xs font-semibold text-white bg-[#3a3a3c] shadow-sm transition";
+      tabHeadersBtn.className = "px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition";
+      tabRawBtn.className = "px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition";
+      tabPayload.classList.remove('hidden');
+      tabHeaders.classList.add('hidden');
+      tabRaw.classList.add('hidden');
+    });
+
+    tabRawBtn.addEventListener('click', () => {
+      tabRawBtn.className = "px-3 py-1 rounded-lg text-xs font-semibold text-white bg-[#3a3a3c] shadow-sm transition";
+      tabHeadersBtn.className = "px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition";
+      tabPayloadBtn.className = "px-3 py-1 rounded-lg text-xs font-medium text-[#86868b] hover:text-white transition";
+      tabRaw.classList.remove('hidden');
+      tabHeaders.classList.add('hidden');
+      tabPayload.classList.add('hidden');
+    });
+
+    // Copy cURL
+    copyCurlBtn.addEventListener('click', async () => {
+      if (!selectedEvent) return;
+      try {
+        const res = await fetch(`/api/curl?id=${selectedEvent.ID}&to=${encodeURIComponent(replayTargetUrl.value)}`);
+        const curlCmd = await res.text();
+        navigator.clipboard.writeText(curlCmd);
+        const original = copyCurlBtn.textContent;
+        copyCurlBtn.textContent = 'Copied!';
+        setTimeout(() => copyCurlBtn.textContent = original, 1800);
+      } catch (e) {}
+    });
+
+    // Replay Modal
+    openReplayBtn.addEventListener('click', () => {
+      replayResultBox.classList.add('hidden');
+      replayModal.classList.remove('hidden');
+    });
+
+    closeReplayModalBtn.addEventListener('click', () => replayModal.classList.add('hidden'));
+    replayModalBackdrop.addEventListener('click', () => replayModal.classList.add('hidden'));
+
+    replayForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!selectedEvent) return;
+
+      const target = replayTargetUrl.value.trim();
+      const customH = replayHeader.value.trim();
+
+      try {
+        const payload = {
+          event_id: selectedEvent.ID,
+          target_url: target,
+          headers: customH ? [customH] : []
+        };
+        const res = await fetch('/api/replay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        
+        replayResultBox.classList.remove('hidden');
+        if (data.response_status) {
+          replayStatusBadge.textContent = `${data.response_status} OK`;
+          replayStatusBadge.className = data.response_status < 400 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold';
+          replayDuration.textContent = `${data.response_duration_ms} ms`;
+          replayResponseBody.textContent = data.response_body_preview || '[Empty Response]';
+        } else {
+          replayStatusBadge.textContent = 'ERROR';
+          replayStatusBadge.className = 'text-red-400 font-bold';
+          replayDuration.textContent = '';
+          replayResponseBody.textContent = data.error || 'Replay failed';
+        }
+      } catch (err) {
+        replayResultBox.classList.remove('hidden');
+        replayStatusBadge.textContent = 'REQUEST FAILED';
+        replayResponseBody.textContent = err.message;
+      }
+    });
+
+    searchInput.addEventListener('input', renderEventList);
+
+    // Initial Start
+    fetchEvents();
+    connectSSE();
+  </script>
+</body>
+</html>

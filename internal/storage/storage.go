@@ -152,12 +152,24 @@ func (s *Store) Get(id string) (*event.Event, error) {
 	return &ev, nil
 }
 
-// List loads all events sorted descending by CapturedAt (newest first).
-func (s *Store) List(limit int) ([]*event.Event, error) {
+// FilterOptions defines search and filtering criteria for events.
+type FilterOptions struct {
+	Limit  int
+	Search string
+	Path   string
+	Method string
+}
+
+// Find queries events based on filtering options, returning them sorted newest first.
+func (s *Store) Find(opts FilterOptions) ([]*event.Event, error) {
 	entries, err := os.ReadDir(s.eventsDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read events directory: %w", err)
 	}
+
+	searchQuery := strings.ToLower(strings.TrimSpace(opts.Search))
+	filterPath := strings.ToLower(strings.TrimSpace(opts.Path))
+	filterMethod := strings.ToUpper(strings.TrimSpace(opts.Method))
 
 	var events []*event.Event
 	for _, entry := range entries {
@@ -168,12 +180,59 @@ func (s *Store) List(limit int) ([]*event.Event, error) {
 		path := filepath.Join(s.eventsDir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue // Skip unreadable or concurrently deleted files
+			continue
 		}
 
 		var ev event.Event
 		if err := json.Unmarshal(data, &ev); err != nil {
 			continue
+		}
+
+		// Filter by Method
+		if filterMethod != "" && strings.ToUpper(ev.Method) != filterMethod {
+			continue
+		}
+
+		// Filter by Path
+		if filterPath != "" && !strings.Contains(strings.ToLower(ev.Path), filterPath) {
+			continue
+		}
+
+		// Filter by Search Query
+		if searchQuery != "" {
+			matched := false
+			if strings.Contains(strings.ToLower(ev.ID), searchQuery) ||
+				strings.Contains(strings.ToLower(ev.Path), searchQuery) ||
+				strings.Contains(strings.ToLower(ev.RawQuery), searchQuery) {
+				matched = true
+			}
+			if !matched {
+				for k, vals := range ev.Headers {
+					if strings.Contains(strings.ToLower(k), searchQuery) {
+						matched = true
+						break
+					}
+					for _, v := range vals {
+						if strings.Contains(strings.ToLower(v), searchQuery) {
+							matched = true
+							break
+						}
+					}
+					if matched {
+						break
+					}
+				}
+			}
+			if !matched {
+				if raw, err := ev.DecodeBody(); err == nil && len(raw) > 0 {
+					if strings.Contains(strings.ToLower(string(raw)), searchQuery) {
+						matched = true
+					}
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 
 		events = append(events, &ev)
@@ -184,11 +243,16 @@ func (s *Store) List(limit int) ([]*event.Event, error) {
 		return events[i].CapturedAt > events[j].CapturedAt
 	})
 
-	if limit > 0 && len(events) > limit {
-		events = events[:limit]
+	if opts.Limit > 0 && len(events) > opts.Limit {
+		events = events[:opts.Limit]
 	}
 
 	return events, nil
+}
+
+// List loads all events sorted descending by CapturedAt (newest first).
+func (s *Store) List(limit int) ([]*event.Event, error) {
+	return s.Find(FilterOptions{Limit: limit})
 }
 
 // Prune removes old events based on retention criteria.

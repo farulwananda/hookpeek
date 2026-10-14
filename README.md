@@ -15,12 +15,16 @@ Built for backend developers integrating third-party callbacks (Stripe, GitHub, 
 ## Features
 
 - **Local HTTP Receiver:** Capture `POST`, `PUT`, and `PATCH` webhook calls on `/hooks/<name>` with a single command.
+- **Live Realtime Forwarding:** Automatically forward incoming webhooks in real time to your development server via `--forward-to`.
 - **Accurate Replay:** Resend captured requests to your development app with exact method and raw payload bytes preserved.
-- **Secure by Default:** Binds to `127.0.0.1` only. Replays default strictly to loopback targets to prevent unintentional SSRF or external flooding.
+- **Interactive Web Inspector:** Offline, private Apple-style web interface with live Server-Sent Events (SSE) streaming and 1-click replay.
+- **Instant cURL Generator:** Turn any captured webhook into a ready-to-run `curl` command with `hookpeek curl`.
+- **Payload Diffing:** Compare two captured payloads side by side to diagnose webhook payload discrepancies.
+- **HMAC Signature Verifier:** Debug and test HMAC-SHA256, SHA1, and SHA512 signatures with custom secrets and headers.
+- **Search & Filtering:** Search through stored webhooks by ID, path, headers, or body payload content.
+- **Secure by Default:** Binds to `127.0.0.1` only. Replays default strictly to loopback targets to prevent unintentional SSRF.
 - **Automatic Header Sanitization:** Automatically redacts `Authorization`, `Cookie`, API keys, and webhook signatures upon storage.
 - **Atomic File Storage:** Persists events as JSON files safely without databases, background daemons, or Docker.
-- **Automation Ready:** Native `--format json` support across commands for integration with `jq` and shell scripts.
-- **Zero Heavy Dependencies:** Built entirely with the Go standard library.
 
 ---
 
@@ -156,6 +160,59 @@ hookpeek prune --keep-last 50
 
 # Preview deletion count without deleting
 hookpeek prune --older-than 7d --dry-run
+```
+
+### 7. Realtime Webhook Forwarding
+
+Automatically proxy incoming webhooks to your local dev app as they arrive, attaching any custom headers required:
+
+```bash
+hookpeek listen --forward-to http://127.0.0.1:3000/api/webhook \
+  --header "Authorization: Bearer dev-secret" \
+  --header "X-Api-Key: my-dev-key"
+```
+
+### 8. Generate cURL Command
+
+Convert any captured webhook event into a copy-pasteable `curl` command:
+
+```bash
+hookpeek curl 16bae9e957e11edba45fd617f9389db3 --to http://127.0.0.1:3000/api/webhook
+```
+
+### 9. Launch Apple-Style Web Live Inspector
+
+Open an offline, private live dashboard in your browser with real-time SSE streaming, payload inspector, and 1-click replay:
+
+```bash
+hookpeek web
+# Or start the listener with UI auto-open:
+hookpeek listen --ui
+```
+
+### 10. Compare Payloads (Diff)
+
+See the exact differences between two webhook payloads:
+
+```bash
+hookpeek diff <event-id-1> <event-id-2>
+```
+
+### 11. Verify HMAC Webhook Signatures
+
+Test and debug webhook signatures with custom shared secrets and headers:
+
+```bash
+hookpeek verify <event-id> --secret "whsec_my_secret" --header "X-Hub-Signature-256"
+```
+
+### 12. Search & Filter Webhook History
+
+Search by keyword in path, headers, or payload text:
+
+```bash
+hookpeek list --search "ORD-12345"
+hookpeek list --path "/hooks/orders" --method POST
 ```
 
 ---

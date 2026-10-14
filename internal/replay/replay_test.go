@@ -150,3 +150,30 @@ func TestValidateTargetURL_Rejections(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateCURL(t *testing.T) {
+	ev := &event.Event{
+		Method:     "POST",
+		Path:       "/hooks/demo",
+		Headers:    map[string][]string{"Content-Type": {"application/json"}},
+		BodyBase64: "eyJldmVudCI6InRlc3QifQ==", // {"event":"test"}
+	}
+
+	cmd, err := GenerateCURL(ev, "http://localhost:3000/api/hook", []string{"Authorization: Bearer secret"})
+	if err != nil {
+		t.Fatalf("GenerateCURL failed: %v", err)
+	}
+
+	if !strings.Contains(cmd, "curl -X POST") {
+		t.Errorf("missing curl -X POST: %s", cmd)
+	}
+	if !strings.Contains(cmd, "http://localhost:3000/api/hook") {
+		t.Errorf("missing target URL: %s", cmd)
+	}
+	if !strings.Contains(cmd, "Authorization: Bearer secret") {
+		t.Errorf("missing custom header: %s", cmd)
+	}
+	if !strings.Contains(cmd, `{"event":"test"}`) {
+		t.Errorf("missing body: %s", cmd)
+	}
+}

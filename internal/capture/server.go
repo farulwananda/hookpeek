@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/farulwananda/hookpeek/internal/event"
+	"github.com/farulwananda/hookpeek/internal/replay"
 	"github.com/farulwananda/hookpeek/internal/storage"
 	"io"
 	"net"
@@ -33,6 +34,10 @@ type Config struct {
 	Store           *storage.Store
 	NowFunc         func() time.Time
 	Logger          io.Writer
+	ForwardTo       string
+	ForwardHeaders  []string
+	AllowRemote     bool
+	OnEventCaptured func(ev *event.Event)
 }
 
 // Server handles listening for and capturing incoming webhooks.
@@ -43,6 +48,8 @@ type Server struct {
 	semaphore  chan struct{}
 	mu         sync.Mutex
 	addr       string
+	sseClients map[chan *event.Event]struct{}
+	sseMu      sync.Mutex
 }
 
 // CaptureResponse is returned upon successful webhook persistence.
@@ -106,14 +113,24 @@ func NewServer(cfg Config) (*Server, error) {
 			Store:           cfg.Store,
 			NowFunc:         nowFunc,
 			Logger:          logger,
+			ForwardTo:       cfg.ForwardTo,
+			ForwardHeaders:  cfg.ForwardHeaders,
+			AllowRemote:     cfg.AllowRemote,
+			OnEventCaptured: cfg.OnEventCaptured,
 		},
-		store:     cfg.Store,
-		semaphore: make(chan struct{}, MaxConcurrent),
+		store:      cfg.Store,
+		semaphore:  make(chan struct{}, MaxConcurrent),
+		sseClients: make(map[chan *event.Event]struct{}),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/hooks/", s.handleCapture)
+	mux.HandleFunc("/ui", s.handleUI)
+	mux.HandleFunc("/api/events/stream", s.handleSSE)
+	mux.HandleFunc("/api/events", s.handleAPIEvents)
+	mux.HandleFunc("/api/replay", s.handleAPIReplay)
+	mux.HandleFunc("/api/curl", s.handleAPICurl)
 	mux.HandleFunc("/", s.handleNotFound)
 	s.httpServer = &http.Server{
 		Addr:              net.JoinHostPort(host, strconv.Itoa(port)),
@@ -238,11 +255,179 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 			now.Format("15:04:05"), ev.Method, ev.Path, ev.BodySize, ev.ID)
 	}
 
+	// Hook for live stream (SSE)
+	if s.cfg.OnEventCaptured != nil {
+		s.cfg.OnEventCaptured(ev)
+	}
+	s.broadcastSSE(ev)
+
+	// Live real-time forwarding
+	if s.cfg.ForwardTo != "" {
+		go func(targetEv *event.Event) {
+			res, err := replay.Replay(context.Background(), targetEv, replay.Config{
+				TargetURL:     s.cfg.ForwardTo,
+				AllowRemote:   s.cfg.AllowRemote,
+				CustomHeaders: s.cfg.ForwardHeaders,
+				Timeout:       15 * time.Second,
+			})
+			if err != nil {
+				if s.cfg.Logger != nil {
+					fmt.Fprintf(s.cfg.Logger, "  └── FORWARD ERROR -> %s: %v\n", s.cfg.ForwardTo, err)
+				}
+				return
+			}
+			if s.cfg.Logger != nil {
+				fmt.Fprintf(s.cfg.Logger, "  └── FORWARDED -> %s (%d %s, %dms)\n",
+					s.cfg.ForwardTo, res.ResponseStatus, http.StatusText(res.ResponseStatus), res.ResponseDuration)
+			}
+		}(ev)
+	}
+
 	// 6. Respond 202 Accepted
 	writeJSON(w, http.StatusAccepted, CaptureResponse{
 		ID:       ev.ID,
 		Captured: true,
 	})
+}
+
+func (s *Server) broadcastSSE(ev *event.Event) {
+	s.sseMu.Lock()
+	defer s.sseMu.Unlock()
+	for ch := range s.sseClients {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
+
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	htmlData, err := os.ReadFile("web/index.html")
+	if err != nil {
+		htmlData, err = os.ReadFile("../web/index.html")
+	}
+	if err != nil {
+		http.Error(w, "web/index.html not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(htmlData)
+}
+
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	ch := make(chan *event.Event, 10)
+	s.sseMu.Lock()
+	s.sseClients[ch] = struct{}{}
+	s.sseMu.Unlock()
+
+	defer func() {
+		s.sseMu.Lock()
+		delete(s.sseClients, ch)
+		close(ch)
+		s.sseMu.Unlock()
+	}()
+
+	flusher.Flush()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev := <-ch:
+			data, err := json.Marshal(ev)
+			if err == nil {
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+func (s *Server) handleAPIEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	events, err := s.store.List(50)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+type apiReplayPayload struct {
+	EventID   string   `json:"event_id"`
+	TargetURL string   `json:"target_url"`
+	Headers   []string `json:"headers"`
+}
+
+func (s *Server) handleAPIReplay(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "POST required"})
+		return
+	}
+
+	var p apiReplayPayload
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid JSON body"})
+		return
+	}
+
+	ev, err := s.store.Get(p.EventID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "event not found"})
+		return
+	}
+
+	res, err := replay.Replay(r.Context(), ev, replay.Config{
+		TargetURL:     p.TargetURL,
+		AllowRemote:   s.cfg.AllowRemote,
+		CustomHeaders: p.Headers,
+		Timeout:       15 * time.Second,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleAPICurl(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	id := r.URL.Query().Get("id")
+	target := r.URL.Query().Get("to")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	ev, err := s.store.Get(id)
+	if err != nil {
+		http.Error(w, "event not found", http.StatusNotFound)
+		return
+	}
+	cmd, err := replay.GenerateCURL(ev, target, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte(cmd))
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

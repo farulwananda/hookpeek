@@ -206,3 +206,54 @@ func isLoopbackHost(host string) bool {
 	}
 	return false
 }
+
+// GenerateCURL produces a copy-pasteable curl command string for a captured event.
+func GenerateCURL(ev *event.Event, targetURL string, customHeaders []string) (string, error) {
+	if ev == nil {
+		return "", errors.New("event cannot be nil")
+	}
+
+	target := strings.TrimSpace(targetURL)
+	if target == "" {
+		target = "http://127.0.0.1:3000" + ev.Path
+		if ev.RawQuery != "" {
+			target += "?" + ev.RawQuery
+		}
+	}
+
+	var parts []string
+	parts = append(parts, "curl -X "+ev.Method, fmt.Sprintf("%q", target))
+
+	// Headers
+	for k, vals := range ev.Headers {
+		lowerK := strings.ToLower(k)
+		if _, isHop := hopByHopHeaders[lowerK]; isHop {
+			continue
+		}
+		for _, v := range vals {
+			if v == "[REDACTED]" {
+				continue
+			}
+			parts = append(parts, "-H", fmt.Sprintf("%q", k+": "+v))
+		}
+	}
+
+	for _, rawH := range customHeaders {
+		trimmed := strings.TrimSpace(rawH)
+		if trimmed != "" {
+			parts = append(parts, "-H", fmt.Sprintf("%q", trimmed))
+		}
+	}
+
+	// Body
+	rawBody, err := ev.DecodeBody()
+	if err != nil {
+		return "", fmt.Errorf("failed to decode body: %w", err)
+	}
+	if len(rawBody) > 0 {
+		escaped := strings.ReplaceAll(string(rawBody), "'", `'\''`)
+		parts = append(parts, "-d", fmt.Sprintf("'%s'", escaped))
+	}
+
+	return strings.Join(parts, " \\\n  "), nil
+}

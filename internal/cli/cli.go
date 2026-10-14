@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,8 +19,10 @@ import (
 	"time"
 
 	"github.com/farulwananda/hookpeek/internal/capture"
+	"github.com/farulwananda/hookpeek/internal/diff"
 	"github.com/farulwananda/hookpeek/internal/replay"
 	"github.com/farulwananda/hookpeek/internal/storage"
+	"github.com/farulwananda/hookpeek/internal/verify"
 )
 
 const (
@@ -33,19 +37,25 @@ const rootHelp = `hookpeek - Capture, inspect, and replay webhooks locally.
 Usage:
   hookpeek <command> [flags] [arguments]
 
-Commands:
   listen     Start local HTTP receiver to capture incoming webhooks
-  list       List captured webhook events
+  list       List captured webhook events with search and filtering
   inspect    Display full details and body of a captured webhook event
   replay     Resend a captured webhook request to a local target URL
+  curl       Generate copy-pasteable cURL command for an event
+  diff       Compare two captured webhook payloads side by side
+  verify     Verify HMAC webhook signatures against a shared secret
+  web        Launch the Apple-style Web Live Inspector
   prune      Delete older webhook event files based on retention rules
   version    Show hookpeek version
-
 Flags (listen):
   --host string          Host address to bind (default "127.0.0.1")
   --port int             Port to listen on (default 8787)
   --max-body int         Maximum request body size in bytes (default 1048576)
   --allow-public-bind    Permit binding to 0.0.0.0 or non-loopback addresses
+  --forward-to string    Auto-forward incoming webhooks in real time to target URL
+  --header string        Custom header to attach when forwarding webhooks (repeatable)
+  --ui                   Launch the Web Inspector in browser on start
+  --allow-remote         Permit forwarding to non-loopback endpoints
   --data-dir string      Custom storage directory for captured events
 
 Flags (list):
@@ -115,6 +125,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runInspect(args[1:], stdout, stderr)
 	case "replay":
 		return runReplay(args[1:], stdout, stderr)
+	case "curl":
+		return runCurl(args[1:], stdout, stderr)
+	case "diff":
+		return runDiff(args[1:], stdout, stderr)
+	case "verify":
+		return runVerify(args[1:], stdout, stderr)
+	case "web", "ui":
+		return runWeb(args[1:], stdout, stderr)
 	case "prune":
 		return runPrune(args[1:], stdout, stderr)
 	default:
@@ -139,8 +157,12 @@ func runListen(args []string, stdout, stderr io.Writer) int {
 	port := fs.Int("port", capture.DefaultPort, "Port to listen on")
 	maxBody := fs.Int64("max-body", capture.DefaultMaxBodySize, "Maximum request body size in bytes")
 	allowPublic := fs.Bool("allow-public-bind", false, "Permit binding to non-loopback addresses")
+	forwardTo := fs.String("forward-to", "", "Auto-forward incoming webhooks in real time to target URL")
+	var forwardHeaders arrayFlags
+	fs.Var(&forwardHeaders, "header", "Custom header to attach when forwarding webhooks (can be repeated)")
+	allowRemote := fs.Bool("allow-remote", false, "Permit forwarding to non-loopback endpoints")
+	launchUI := fs.Bool("ui", false, "Open the Web Live Inspector in default browser")
 	dataDir := fs.String("data-dir", "", "Custom storage directory")
-
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return ExitSuccess
@@ -161,6 +183,9 @@ func runListen(args []string, stdout, stderr io.Writer) int {
 		AllowPublicBind: *allowPublic,
 		Store:           store,
 		Logger:          stdout,
+		ForwardTo:       *forwardTo,
+		ForwardHeaders:  forwardHeaders,
+		AllowRemote:     *allowRemote,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "hookpeek listen: %v\n", err)
@@ -173,7 +198,13 @@ func runListen(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "hookpeek: listener active on http://%s:%d\n", *host, *port)
 	fmt.Fprintf(stdout, "Send webhooks to http://%s:%d/hooks/<name>\n", *host, *port)
 	fmt.Fprintf(stdout, "Storage: %s\n", store.EventsDir())
+	if *forwardTo != "" {
+		fmt.Fprintf(stdout, "Forwarding: -> %s\n", *forwardTo)
+	}
 	fmt.Fprintln(stdout, "Press Ctrl+C to stop.")
+	if *launchUI {
+		go openBrowser(fmt.Sprintf("http://%s:%d/ui", *host, *port))
+	}
 
 	if err := srv.Start(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(stderr, "hookpeek listen: server error: %v\n", err)
@@ -189,9 +220,11 @@ func runList(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	limit := fs.Int("limit", 20, "Maximum number of events to show (0 = all)")
+	search := fs.String("search", "", "Search keywords in ID, path, query, headers, or body")
+	pathFilter := fs.String("path", "", "Filter events by path substring")
+	methodFilter := fs.String("method", "", "Filter events by HTTP method (e.g. POST, PUT, PATCH)")
 	format := fs.String("format", "table", "Output format: 'table' or 'json'")
 	dataDir := fs.String("data-dir", "", "Custom storage directory")
-
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return ExitSuccess
@@ -210,7 +243,12 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		return ExitFailure
 	}
 
-	events, err := store.List(*limit)
+	events, err := store.Find(storage.FilterOptions{
+		Limit:  *limit,
+		Search: *search,
+		Path:   *pathFilter,
+		Method: *methodFilter,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "hookpeek list: failed to list events: %v\n", err)
 		return ExitFailure
@@ -468,6 +506,184 @@ func runPrune(args []string, stdout, stderr io.Writer) int {
 	}
 
 	return ExitSuccess
+}
+func runCurl(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("curl", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	targetURL := fs.String("to", "", "Target destination URL (defaults to http://127.0.0.1:3000<path>)")
+	var customHeaders arrayFlags
+	fs.Var(&customHeaders, "header", "Custom header to append or override (can be repeated)")
+	dataDir := fs.String("data-dir", "", "Custom storage directory")
+
+	positionals, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return ExitSuccess
+		}
+		return ExitUsage
+	}
+
+	if len(positionals) == 0 {
+		fmt.Fprintln(stderr, "hookpeek curl: missing event ID argument")
+		return ExitUsage
+	}
+
+	store, err := getStore(*dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek curl: failed initializing storage: %v\n", err)
+		return ExitFailure
+	}
+
+	ev, err := store.Get(positionals[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek curl: %v\n", err)
+		return ExitFailure
+	}
+
+	cmd, err := replay.GenerateCURL(ev, *targetURL, customHeaders)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek curl: %v\n", err)
+		return ExitFailure
+	}
+
+	fmt.Fprintln(stdout, cmd)
+	return ExitSuccess
+}
+
+func runDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	dataDir := fs.String("data-dir", "", "Custom storage directory")
+
+	positionals, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return ExitSuccess
+		}
+		return ExitUsage
+	}
+
+	if len(positionals) < 2 {
+		fmt.Fprintln(stderr, "hookpeek diff: requires two event IDs to compare (usage: hookpeek diff <id1> <id2>)")
+		return ExitUsage
+	}
+
+	store, err := getStore(*dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek diff: failed initializing storage: %v\n", err)
+		return ExitFailure
+	}
+
+	ev1, err := store.Get(positionals[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek diff: event 1 error: %v\n", err)
+		return ExitFailure
+	}
+
+	ev2, err := store.Get(positionals[1])
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek diff: event 2 error: %v\n", err)
+		return ExitFailure
+	}
+
+	out := diff.Compare(ev1, ev2)
+	fmt.Fprint(stdout, out)
+	return ExitSuccess
+}
+
+func runVerify(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	secret := fs.String("secret", "", "Secret key used to compute HMAC (required)")
+	headerName := fs.String("header", "", "Signature header name (auto-detected if omitted)")
+	algo := fs.String("algo", "sha256", "HMAC algorithm: 'sha256', 'sha1', or 'sha512'")
+	format := fs.String("format", "text", "Output format: 'text' or 'json'")
+	dataDir := fs.String("data-dir", "", "Custom storage directory")
+
+	positionals, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return ExitSuccess
+		}
+		return ExitUsage
+	}
+
+	if len(positionals) == 0 {
+		fmt.Fprintln(stderr, "hookpeek verify: missing event ID argument")
+		return ExitUsage
+	}
+
+	if *secret == "" {
+		fmt.Fprintln(stderr, "hookpeek verify: --secret flag is required")
+		return ExitUsage
+	}
+
+	store, err := getStore(*dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek verify: failed initializing storage: %v\n", err)
+		return ExitFailure
+	}
+
+	ev, err := store.Get(positionals[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek verify: %v\n", err)
+		return ExitFailure
+	}
+
+	res, err := verify.Verify(ev, verify.Options{
+		Secret:     *secret,
+		HeaderName: *headerName,
+		Algorithm:  *algo,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek verify: %v\n", err)
+		return ExitFailure
+	}
+
+	if *format == "json" {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(res)
+		if !res.Matched {
+			return ExitFailure
+		}
+		return ExitSuccess
+	}
+
+	fmt.Fprintf(stdout, "EVENT ID:     %s\n", res.EventID)
+	fmt.Fprintf(stdout, "HEADER:       %s\n", res.HeaderName)
+	fmt.Fprintf(stdout, "ALGORITHM:    %s\n", strings.ToUpper(res.Algorithm))
+	fmt.Fprintf(stdout, "RECEIVED:     %s\n", res.ReceivedHeaderValue)
+	fmt.Fprintf(stdout, "COMPUTED:     %s\n", res.ComputedHex)
+
+	if res.Matched {
+		fmt.Fprintln(stdout, "\nSTATUS:       VALID (HMAC signature matches payload)")
+		return ExitSuccess
+	}
+
+	fmt.Fprintln(stdout, "\nSTATUS:       MISMATCH (HMAC signature does not match payload)")
+	return ExitFailure
+}
+
+func runWeb(args []string, stdout, stderr io.Writer) int {
+	argsWithUI := append([]string{"--ui"}, args...)
+	return runListen(argsWithUI, stdout, stderr)
+}
+
+func openBrowser(target string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", target)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", target)
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+	_ = cmd.Start()
 }
 
 func parseDuration(s string) (time.Duration, error) {
