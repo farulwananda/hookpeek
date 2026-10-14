@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Release Multi-Platform Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive_name: hookpeek-linux-amd64
+          - goos: linux
+            goarch: arm64
+            archive_name: hookpeek-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            archive_name: hookpeek-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            archive_name: hookpeek-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            archive_name: hookpeek-windows-amd64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+
+      - name: Build Binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          BIN_NAME="hookpeek"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BIN_NAME="hookpeek.exe"
+          fi
+          go build -ldflags="-s -w" -o "dist/${BIN_NAME}" ./cmd/hookpeek
+
+      - name: Package Archives
+        run: |
+          cd dist
+          ARCHIVE="${{ matrix.archive_name }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "${ARCHIVE}.zip" hookpeek.exe ../README.md ../LICENSE
+            sha256sum "${ARCHIVE}.zip" > "${ARCHIVE}.zip.sha256"
+          else
+            tar -czvf "${ARCHIVE}.tar.gz" hookpeek ../README.md ../LICENSE
+            sha256sum "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
+          fi
+
+      - name: Upload Binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256

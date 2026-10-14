@@ -1,0 +1,23 @@
+# Binaries
+/hookpeek
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.html
+
+# Local data & captured events
+events/
+*.tmp
+
+# OS & Editor files
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,11 @@
+{
+  "event": "order.updated",
+  "order_id": "ORD-98765",
+  "status": "completed",
+  "currency": "USD",
+  "amount": 149.99,
+  "customer": {
+    "name": "Alex Mercer",
+    "email": "alex@example.com"
+  }
+}
