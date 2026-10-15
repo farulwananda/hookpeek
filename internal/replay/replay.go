@@ -32,13 +32,14 @@ var hopByHopHeaders = map[string]struct{}{
 
 // Config holds options for replaying an event.
 type Config struct {
-	TargetURL       string
-	AllowRemote     bool
-	CustomHeaders   []string
-	DryRun          bool
-	Timeout         time.Duration
-	MaxResponseSize int64
-	Client          *http.Client
+	TargetURL                 string
+	AllowRemote               bool
+	CustomHeaders             []string
+	DryRun                    bool
+	Timeout                   time.Duration
+	ForwardOriginalSignatures bool // only for ephemeral live forwarding, never stored replay
+	MaxResponseSize           int64
+	Client                    *http.Client
 }
 
 // Result holds the details and outcome of a replay execution.
@@ -106,9 +107,13 @@ func Replay(ctx context.Context, ev *event.Event, cfg Config) (*Result, error) {
 
 	// Prepare outbound headers
 	outboundHeader := make(http.Header)
-	for k, vals := range ev.Headers {
+	storedHeaders := ev.Headers
+	if !cfg.ForwardOriginalSignatures {
+		storedHeaders = event.SanitizeHeaders(http.Header(ev.Headers))
+	}
+	for k, vals := range storedHeaders {
 		lowerK := strings.ToLower(k)
-		if _, isHop := hopByHopHeaders[lowerK]; isHop {
+		if _, isHop := hopByHopHeaders[lowerK]; isHop || (event.IsSignatureHeader(k) && !cfg.ForwardOriginalSignatures) {
 			continue
 		}
 		for _, v := range vals {
@@ -221,27 +226,26 @@ func GenerateCURL(ev *event.Event, targetURL string, customHeaders []string) (st
 		}
 	}
 
-	var parts []string
-	parts = append(parts, "curl -X "+ev.Method, fmt.Sprintf("%q", target))
+	parts := []string{"curl -X " + shellQuote(ev.Method)}
 
 	// Headers
-	for k, vals := range ev.Headers {
+	for k, vals := range event.SanitizeHeaders(http.Header(ev.Headers)) {
 		lowerK := strings.ToLower(k)
-		if _, isHop := hopByHopHeaders[lowerK]; isHop {
+		if _, isHop := hopByHopHeaders[lowerK]; isHop || event.IsSignatureHeader(k) {
 			continue
 		}
 		for _, v := range vals {
 			if v == "[REDACTED]" {
 				continue
 			}
-			parts = append(parts, "-H", fmt.Sprintf("%q", k+": "+v))
+			parts = append(parts, "-H", shellQuote(k+": "+v))
 		}
 	}
 
 	for _, rawH := range customHeaders {
 		trimmed := strings.TrimSpace(rawH)
 		if trimmed != "" {
-			parts = append(parts, "-H", fmt.Sprintf("%q", trimmed))
+			parts = append(parts, "-H", shellQuote(trimmed))
 		}
 	}
 
@@ -250,10 +254,22 @@ func GenerateCURL(ev *event.Event, targetURL string, customHeaders []string) (st
 	if err != nil {
 		return "", fmt.Errorf("failed to decode body: %w", err)
 	}
-	if len(rawBody) > 0 {
-		escaped := strings.ReplaceAll(string(rawBody), "'", `'\''`)
-		parts = append(parts, "-d", fmt.Sprintf("'%s'", escaped))
+	if bytes.IndexByte(rawBody, 0) >= 0 {
+		return "", errors.New("cannot represent a NUL byte in a POSIX shell argument")
 	}
+	if len(rawBody) > 0 {
+		// stdin avoids curl's special interpretation of leading @ as a file.
+		parts = append(parts, "--data-binary", "@-")
+	}
+	parts = append(parts, "--", shellQuote(target))
+	command := strings.Join(parts, " \\\n  ")
+	if len(rawBody) > 0 {
+		return "printf '%s' " + shellQuote(string(rawBody)) + " | " + command, nil
+	}
+	return command, nil
+}
 
-	return strings.Join(parts, " \\\n  "), nil
+// POSIX single-quoted literals never evaluate $, backticks, or backslashes.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

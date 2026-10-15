@@ -2,9 +2,13 @@ package replay
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -164,7 +168,7 @@ func TestGenerateCURL(t *testing.T) {
 		t.Fatalf("GenerateCURL failed: %v", err)
 	}
 
-	if !strings.Contains(cmd, "curl -X POST") {
+	if !strings.Contains(cmd, "curl -X 'POST'") {
 		t.Errorf("missing curl -X POST: %s", cmd)
 	}
 	if !strings.Contains(cmd, "http://localhost:3000/api/hook") {
@@ -175,5 +179,47 @@ func TestGenerateCURL(t *testing.T) {
 	}
 	if !strings.Contains(cmd, `{"event":"test"}`) {
 		t.Errorf("missing body: %s", cmd)
+	}
+}
+
+func TestGenerateCURL_ShellLiteralsDoNotExecute(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "executed")
+	attack := "$(touch " + marker + ")`touch " + marker + "`'\""
+	ev := &event.Event{
+		Method:     "POST",
+		Path:       "/hooks/" + attack,
+		Headers:    map[string][]string{"X-Input": {attack}, "X-Signature": {"private"}},
+		BodyBase64: base64.StdEncoding.EncodeToString([]byte(attack)),
+	}
+	cmd, err := GenerateCURL(ev, "http://localhost:3000/"+attack, []string{"X-Extra: " + attack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cmd, "private") {
+		t.Fatal("signature must not appear in generated curl")
+	}
+	out, err := exec.Command("sh", "-c", "curl() { cat; printf '%s\\n' \"$@\"; }\n"+cmd).CombinedOutput()
+	if err != nil {
+		t.Fatalf("shell command failed: %v: %s", err, out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("shell substitution executed: %v", err)
+	}
+	if strings.Count(string(out), attack) < 4 {
+		t.Fatalf("literal input lost: %q", out)
+	}
+}
+
+func TestGenerateCURL_AtBodyUsesStdin(t *testing.T) {
+	ev := &event.Event{Method: "POST", Path: "/hooks/demo",
+		BodyBase64: base64.StdEncoding.EncodeToString([]byte("@/etc/passwd"))}
+	cmd, err := GenerateCURL(ev, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cmd, "--data-binary \\\n  @-") ||
+		!strings.HasPrefix(cmd, "printf '%s' '@/etc/passwd' | curl") {
+		t.Fatalf("curl might interpret body as a filename: %s", cmd)
 	}
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/farulwananda/hookpeek/internal/capture"
 	"github.com/farulwananda/hookpeek/internal/diff"
+	"github.com/farulwananda/hookpeek/internal/event"
 	"github.com/farulwananda/hookpeek/internal/replay"
 	"github.com/farulwananda/hookpeek/internal/storage"
 	"github.com/farulwananda/hookpeek/internal/verify"
@@ -253,6 +254,9 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "hookpeek list: failed to list events: %v\n", err)
 		return ExitFailure
 	}
+	for _, ev := range events {
+		ev.Headers = event.SanitizeHeaders(http.Header(ev.Headers))
+	}
 
 	if *format == "json" {
 		enc := json.NewEncoder(stdout)
@@ -320,6 +324,7 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "hookpeek inspect: %v\n", err)
 		return ExitFailure
 	}
+	ev.Headers = event.SanitizeHeaders(http.Header(ev.Headers))
 
 	if *format == "json" {
 		enc := json.NewEncoder(stdout)
@@ -632,11 +637,17 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "hookpeek verify: %v\n", err)
 		return ExitFailure
 	}
+	signatures, err := store.GetSignatureHeaders(ev.ID)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookpeek verify: %v\n", err)
+		return ExitFailure
+	}
 
 	res, err := verify.Verify(ev, verify.Options{
-		Secret:     *secret,
-		HeaderName: *headerName,
-		Algorithm:  *algo,
+		Secret:           *secret,
+		HeaderName:       *headerName,
+		Algorithm:        *algo,
+		SignatureHeaders: signatures,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "hookpeek verify: %v\n", err)

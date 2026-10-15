@@ -17,13 +17,13 @@ Built for backend developers integrating third-party callbacks (Stripe, GitHub, 
 - **Local HTTP Receiver:** Capture `POST`, `PUT`, and `PATCH` webhook calls on `/hooks/<name>` with a single command.
 - **Live Realtime Forwarding:** Automatically forward incoming webhooks in real time to your development server via `--forward-to`.
 - **Accurate Replay:** Resend captured requests to your development app with exact method and raw payload bytes preserved.
-- **Interactive Web Inspector:** Offline, private Apple-style web interface with live Server-Sent Events (SSE) streaming and 1-click replay.
+- **Interactive Web Inspector:** Bundled same-origin local UI with live Server-Sent Events (SSE) streaming and 1-click replay (the page's Tailwind and font assets currently load from external CDNs).
 - **Instant cURL Generator:** Turn any captured webhook into a ready-to-run `curl` command with `hookpeek curl`.
 - **Payload Diffing:** Compare two captured payloads side by side to diagnose webhook payload discrepancies.
 - **HMAC Signature Verifier:** Debug and test HMAC-SHA256, SHA1, and SHA512 signatures with custom secrets and headers.
 - **Search & Filtering:** Search through stored webhooks by ID, path, headers, or body payload content.
 - **Secure by Default:** Binds to `127.0.0.1` only. Replays default strictly to loopback targets to prevent unintentional SSRF.
-- **Automatic Header Sanitization:** Automatically redacts `Authorization`, `Cookie`, API keys, and webhook signatures upon storage.
+- **Automatic Header Sanitization:** Redacts `Authorization`, `Cookie`, API keys, and webhook signatures in event JSON; original signature headers are kept only in private sidecar files for local verification.
 - **Atomic File Storage:** Persists events as JSON files safely without databases, background daemons, or Docker.
 
 ---
@@ -174,7 +174,7 @@ hookpeek listen --forward-to http://127.0.0.1:3000/api/webhook \
 
 ### 8. Generate cURL Command
 
-Convert any captured webhook event into a copy-pasteable `curl` command:
+Convert a captured webhook event into a POSIX-shell-quoted `curl` command (bodies containing NUL bytes cannot be represented as shell arguments):
 
 ```bash
 hookpeek curl 16bae9e957e11edba45fd617f9389db3 --to http://127.0.0.1:3000/api/webhook
@@ -182,13 +182,15 @@ hookpeek curl 16bae9e957e11edba45fd617f9389db3 --to http://127.0.0.1:3000/api/we
 
 ### 9. Launch Apple-Style Web Live Inspector
 
-Open an offline, private live dashboard in your browser with real-time SSE streaming, payload inspector, and 1-click replay:
+Open the bundled private live dashboard in your browser with real-time SSE streaming, payload inspector, and 1-click replay. It works regardless of the CLI's current working directory:
 
 ```bash
 hookpeek web
 # Or start the listener with UI auto-open:
 hookpeek listen --ui
 ```
+
+The inspector and `/api/*` endpoints accept loopback clients only (even with `--allow-public-bind`); browser requests must come from the same local origin. Webhook capture at `/hooks/*` remains available on the configured listener. Local scripts without an `Origin` header can still use the API.
 
 ### 10. Compare Payloads (Diff)
 
@@ -205,6 +207,8 @@ Test and debug webhook signatures with custom shared secrets and headers:
 ```bash
 hookpeek verify <event-id> --secret "whsec_my_secret" --header "X-Hub-Signature-256"
 ```
+
+Incoming signature headers are redacted from captured event JSON and inspector output. Their original values are saved separately in a private `signatures/` directory for local `hookpeek verify`; old events without a private signature remain unverifiable if they were captured with a redacted signature. Legacy events containing unredacted signature headers can still be verified, but inspector/API output masks them.
 
 ### 12. Search & Filter Webhook History
 
@@ -287,8 +291,8 @@ Flags:
 - **Loopback Enforcement:** Binds exclusively to `127.0.0.1` by default. Binding to `0.0.0.0` requires `--allow-public-bind`.
 - **Target Guards:** Replays are restricted to `localhost`/loopback targets unless explicitly bypassed with `--allow-remote`.
 - **Redirects Disabled:** Automatic HTTP redirect following is disabled on replay to prevent SSRF bypasses.
-- **Credential Masking:** Headers such as `Authorization`, `Cookie`, `Set-Cookie`, `X-API-Key`, and webhook signatures are masked to `[REDACTED]` prior to storage.
-- **Permission Hardening:** Storage directories and event files use restricted permissions (`0700` and `0600`) on supported systems.
+- **Credential Masking:** Headers such as `Authorization`, `Cookie`, `Set-Cookie`, `X-API-Key`, and webhook signatures are masked to `[REDACTED]` in event JSON, CLI inspect, and the web inspector. Original signature headers alone are stored in private `0600` sidecar files for local HMAC verification and deleted on prune; they are not served by the API. Live forwarding sends original request headers, while later replay uses redacted stored headers.
+- **Permission Hardening:** Storage directories and event/signature files use restricted permissions (`0700` and `0600`) on supported systems.
 
 For full details, see [docs/SECURITY.md](docs/SECURITY.md).
 

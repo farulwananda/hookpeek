@@ -113,12 +113,33 @@ func ValidateID(id string) error {
 	return nil
 }
 
+// IsSignatureHeader identifies signature fields retained only for local verification.
+func IsSignatureHeader(name string) bool {
+	return isSignatureHeaderLower(strings.ToLower(name))
+}
+
+func isSignatureHeaderLower(lower string) bool {
+	return strings.Contains(lower, "signature") || strings.Contains(lower, "hmac") ||
+		strings.HasSuffix(lower, "-sig") || strings.HasSuffix(lower, "_sig")
+}
+
+// SignatureHeaders copies incoming signature values for private local storage.
+func SignatureHeaders(headers http.Header) map[string][]string {
+	result := make(map[string][]string)
+	for k, vals := range headers {
+		if IsSignatureHeader(k) {
+			result[k] = append([]string(nil), vals...)
+		}
+	}
+	return result
+}
+
 // SanitizeHeaders redacts credentials and sensitive signature headers.
 func SanitizeHeaders(headers http.Header) map[string][]string {
 	result := make(map[string][]string, len(headers))
 	for k, v := range headers {
 		lowerK := strings.ToLower(k)
-		if _, isSensitive := sensitiveHeaders[lowerK]; isSensitive {
+		if _, isSensitive := sensitiveHeaders[lowerK]; isSensitive || isSignatureHeaderLower(lowerK) {
 			result[k] = []string{"[REDACTED]"}
 		} else {
 			cp := make([]string, len(v))

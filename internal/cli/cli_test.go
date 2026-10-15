@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -198,7 +201,7 @@ func TestCLI_Curl(t *testing.T) {
 	if code != ExitSuccess {
 		t.Fatalf("curl command failed: %s", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "curl -X POST") || !strings.Contains(stdout.String(), "X-Api-Key: test-key") {
+	if !strings.Contains(stdout.String(), "curl -X 'POST'") || !strings.Contains(stdout.String(), "X-Api-Key: test-key") {
 		t.Errorf("unexpected curl output: %s", stdout.String())
 	}
 }
@@ -236,6 +239,39 @@ func TestCLI_Verify(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "STATUS:") {
 		t.Errorf("missing STATUS in verify output: %s", stdout.String())
+	}
+}
+
+func TestCLI_VerifyPrivateStoredSignature(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"message":"signed"}`)
+	secret := "private-secret"
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	req := httptest.NewRequest(http.MethodPost, "/hooks/signed", nil)
+	req.Header.Set("X-Hub-Signature-256", sig)
+	ev, err := event.New(req, body, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWithSignatures(ev, event.SignatureHeaders(req.Header)); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	if code := Run([]string{"verify", ev.ID, "--secret", secret, "--data-dir", dir, "--format", "json"}, &out, &stderr); code != ExitSuccess {
+		t.Fatalf("verification failed: %s; %s", out.String(), stderr.String())
+	}
+	if !strings.Contains(out.String(), `"matched": true`) || strings.Contains(out.String(), sig) {
+		t.Fatalf("signature result incorrect or exposed: %s", out.String())
+	}
+	out.Reset()
+	if code := Run([]string{"inspect", ev.ID, "--data-dir", dir, "--format", "json"}, &out, &stderr); code != ExitSuccess || strings.Contains(out.String(), sig) {
+		t.Fatalf("inspector leaked signature: %s, %s", out.String(), stderr.String())
 	}
 }
 

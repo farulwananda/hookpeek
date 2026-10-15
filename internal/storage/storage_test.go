@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,5 +139,42 @@ func TestStore_Prune(t *testing.T) {
 	remaining, _ := store.List(0)
 	if len(remaining) != 2 {
 		t.Errorf("remaining = %d, want 2", len(remaining))
+	}
+}
+
+func TestStore_PrivateSignaturesPruned(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := createTestEvent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", time.Now().Add(-time.Hour))
+	ev.Headers["X-Hub-Signature-256"] = []string{"sha256=private"}
+	if err := store.SaveWithSignatures(ev, map[string][]string{
+		"X-Hub-Signature-256": {"sha256=private"},
+		"Authorization":       {"Bearer never-save"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventJSON, err := os.ReadFile(filepath.Join(store.EventsDir(), ev.ID+".json"))
+	if err != nil || strings.Contains(string(eventJSON), "sha256=private") {
+		t.Fatalf("event JSON leaked signature: %v, %s", err, eventJSON)
+	}
+	signPath := filepath.Join(store.BaseDir(), "signatures", ev.ID+".json")
+	stat, err := os.Stat(signPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Mode().Perm()&0077 != 0 {
+		t.Fatalf("signature sidecar is accessible to other users: %v", stat.Mode())
+	}
+	headers, err := store.GetSignatureHeaders(ev.ID)
+	if err != nil || headers["X-Hub-Signature-256"][0] != "sha256=private" || len(headers) != 1 {
+		t.Fatalf("private signature storage mismatch: %v, %v", headers, err)
+	}
+	if _, err := store.Prune(0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(signPath); !os.IsNotExist(err) {
+		t.Fatalf("pruned event retained signature: %v", err)
 	}
 }

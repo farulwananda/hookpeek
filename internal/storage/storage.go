@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -83,6 +84,9 @@ func (s *Store) Save(ev *event.Event) error {
 	if err := event.ValidateID(ev.ID); err != nil {
 		return err
 	}
+	// Event files never contain raw credentials, including when Save is called
+	// directly with a legacy or hand-built event.
+	ev.Headers = event.SanitizeHeaders(http.Header(ev.Headers))
 
 	data, err := json.MarshalIndent(ev, "", "  ")
 	if err != nil {
@@ -127,6 +131,83 @@ func (s *Store) Save(ev *event.Event) error {
 
 	success = true
 	return nil
+}
+
+// SaveWithSignatures persists the redacted event and its verification-only
+// signature values separately. The signature file is never part of event JSON.
+func (s *Store) SaveWithSignatures(ev *event.Event, headers map[string][]string) error {
+	if err := event.ValidateID(ev.ID); err != nil {
+		return err
+	}
+	if len(headers) == 0 {
+		return s.Save(ev)
+	}
+	signatures := make(map[string][]string)
+	for name, values := range headers {
+		if event.IsSignatureHeader(name) {
+			signatures[name] = append([]string(nil), values...)
+		}
+	}
+	if len(signatures) == 0 {
+		return s.Save(ev)
+	}
+	dir := filepath.Join(s.baseDir, "signatures")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("failed creating private signature directory: %w", err)
+	}
+	data, err := json.Marshal(signatures)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "tmp_*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, ev.ID+".json")
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	if err := s.Save(ev); err != nil {
+		os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+// GetSignatureHeaders returns private values for CLI verification only.
+// Missing sidecars belong to legacy events and have no saved signature.
+func (s *Store) GetSignatureHeaders(id string) (map[string][]string, error) {
+	if err := event.ValidateID(id); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(s.baseDir, "signatures", id+".json"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var headers map[string][]string
+	if err := json.Unmarshal(data, &headers); err != nil {
+		return nil, fmt.Errorf("corrupt private signature data for %s: %w", id, err)
+	}
+	return headers, nil
 }
 
 // Get retrieves a single event by ID.
@@ -293,6 +374,7 @@ func (s *Store) Prune(olderThan time.Duration, keepLast int, dryRun bool) (int, 
 		path := filepath.Join(s.eventsDir, ev.ID+".json")
 		if err := os.Remove(path); err == nil {
 			deletedCount++
+			_ = os.Remove(filepath.Join(s.baseDir, "signatures", ev.ID+".json"))
 		}
 	}
 

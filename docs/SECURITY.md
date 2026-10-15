@@ -7,6 +7,7 @@
 1. **Loopback Only:**
    - The listener binds exclusively to `127.0.0.1` by default.
    - Binding to `0.0.0.0` or any non-loopback network interface requires the explicit `--allow-public-bind` flag.
+   - The inspector UI and `/api/*` remain loopback-client only even when capture uses `--allow-public-bind`. Inspector browsers must use the same local origin; other origins and remote peers are denied. Webhook capture endpoints remain accessible on the configured listener.
 
 2. **Loopback-Only Replay Target:**
    - The `replay` command defaults strictly to loopback targets (`127.0.0.1`, `localhost`, `::1`).
@@ -16,14 +17,14 @@
    - The HTTP client used for replaying requests disables automatic redirect following, preventing target restriction bypasses.
 
 4. **Credential and Signature Sanitization:**
-   - Common sensitive headers (`Authorization`, `Cookie`, `Set-Cookie`, `X-API-Key`, and provider webhook signatures) are automatically redacted to `[REDACTED]` upon storage.
-   - They are never stored in plaintext in event files. When replaying, developers can supply fresh dev credentials via `--header`.
+   - Common sensitive headers (`Authorization`, `Cookie`, `Set-Cookie`, `X-API-Key`, and signature/HMAC headers) are automatically redacted to `[REDACTED]` in event files and inspector/API responses.
+   - Incoming signatures are stored separately as plaintext in a private `signatures/` directory (files `0600`) so local HMAC verification can work. This directory must be protected like the raw payload storage. Signature sidecars are removed on prune; regular replay does not reuse them, but immediate live forwarding sends original incoming headers. Supply fresh dev credentials with `--header` for later replay.
 
 5. **Terminal Redaction in Inspect:**
    - The `inspect` command redacts common secret keys (`password`, `token`, `secret`, `api_key`, `access_token`) in formatted terminal previews.
 
 6. **Restricted File Permissions:**
-   - Event files and data directories are created with restrictive permissions (`0700` for directories, `0600` for event files) on supported Unix/POSIX systems.
+   - Event files, signature sidecars, and data directories are created with restrictive permissions (`0700` for directories, `0600` for files) on supported Unix/POSIX systems.
 
 7. **URL Sanitization:**
    - Replay targets strictly require `http` or `https` schemes without embedded user credentials (`user:pass@host`).

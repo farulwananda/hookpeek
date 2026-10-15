@@ -8,6 +8,7 @@ import (
 	"github.com/farulwananda/hookpeek/internal/event"
 	"github.com/farulwananda/hookpeek/internal/replay"
 	"github.com/farulwananda/hookpeek/internal/storage"
+	"github.com/farulwananda/hookpeek/web"
 	"io"
 	"net"
 	"net/http"
@@ -134,7 +135,7 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/", s.handleNotFound)
 	s.httpServer = &http.Server{
 		Addr:              net.JoinHostPort(host, strconv.Itoa(port)),
-		Handler:           mux,
+		Handler:           s.guardLocalUI(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -243,8 +244,8 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Persist to storage
-	if err := s.store.Save(ev); err != nil {
+	// Signature values are persisted separately from the public/redacted event.
+	if err := s.store.SaveWithSignatures(ev, event.SignatureHeaders(r.Header)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "failed persisting event"})
 		return
 	}
@@ -263,12 +264,17 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 
 	// Live real-time forwarding
 	if s.cfg.ForwardTo != "" {
-		go func(targetEv *event.Event) {
-			res, err := replay.Replay(context.Background(), targetEv, replay.Config{
-				TargetURL:     s.cfg.ForwardTo,
-				AllowRemote:   s.cfg.AllowRemote,
-				CustomHeaders: s.cfg.ForwardHeaders,
-				Timeout:       15 * time.Second,
+		// Forward from incoming headers, not the redacted persisted representation.
+		// The copy is used only by this goroutine; it is never stored or published.
+		live := *ev
+		live.Headers = r.Header.Clone()
+		go func() {
+			res, err := replay.Replay(context.Background(), &live, replay.Config{
+				TargetURL:                 s.cfg.ForwardTo,
+				AllowRemote:               s.cfg.AllowRemote,
+				CustomHeaders:             s.cfg.ForwardHeaders,
+				Timeout:                   15 * time.Second,
+				ForwardOriginalSignatures: true,
 			})
 			if err != nil {
 				if s.cfg.Logger != nil {
@@ -280,7 +286,7 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(s.cfg.Logger, "  └── FORWARDED -> %s (%d %s, %dms)\n",
 					s.cfg.ForwardTo, res.ResponseStatus, http.StatusText(res.ResponseStatus), res.ResponseDuration)
 			}
-		}(ev)
+		}()
 	}
 
 	// 6. Respond 202 Accepted
@@ -302,19 +308,59 @@ func (s *Server) broadcastSSE(ev *event.Event) {
 }
 
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
-	htmlData, err := os.ReadFile("web/index.html")
-	if err != nil {
-		htmlData, err = os.ReadFile("../web/index.html")
-	}
-	if err != nil {
-		http.Error(w, "web/index.html not found", http.StatusNotFound)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(htmlData)
+	_, _ = w.Write(web.IndexHTML)
+}
+
+// The inspector and its API are local-only, including on public capture binds.
+// Browsers must also originate on this exact HTTP authority (DNS rebinding and
+// cross-origin POSTs cannot bypass this with a simple request).
+func (s *Server) guardLocalUI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ui" || strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Cache-Control", "no-store")
+			peer, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil || !isLoopback(peer) || !localAuthority(r.Host) {
+				http.Error(w, "local inspector only", http.StatusForbidden)
+				return
+			}
+			if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {
+				http.Error(w, "cross-origin inspector access denied", http.StatusForbidden)
+				return
+			}
+			if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+				http.Error(w, "cross-origin inspector access denied", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func localAuthority(authority string) bool {
+	host := authority
+	if strings.Contains(authority, ":") {
+		var err error
+		host, _, err = net.SplitHostPort(authority)
+		if err != nil {
+			return false
+		}
+	}
+	return isLoopback(host)
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	// The live stream must outlive the server's normal response write deadline.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
@@ -324,7 +370,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	ch := make(chan *event.Event, 10)
 	s.sseMu.Lock()
@@ -355,11 +400,15 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPIEvents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	events, err := s.store.List(50)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
+	}
+	// Older event files may predate signature redaction; never expose those
+	// headers through the inspector API.
+	for _, ev := range events {
+		ev.Headers = event.SanitizeHeaders(http.Header(ev.Headers))
 	}
 	writeJSON(w, http.StatusOK, events)
 }
@@ -371,13 +420,6 @@ type apiReplayPayload struct {
 }
 
 func (s *Server) handleAPIReplay(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	if r.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.WriteHeader(http.StatusOK)
-		return
-	}
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "POST required"})
 		return
@@ -402,6 +444,10 @@ func (s *Server) handleAPIReplay(w http.ResponseWriter, r *http.Request) {
 		Timeout:       15 * time.Second,
 	})
 	if err != nil {
+		if res == nil {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, res)
 		return
 	}
@@ -409,7 +455,6 @@ func (s *Server) handleAPIReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPICurl(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	id := r.URL.Query().Get("id")
 	target := r.URL.Query().Get("to")
 	if id == "" {

@@ -29,9 +29,10 @@ var autoSignatureHeaders = []string{
 
 // Options configures HMAC verification.
 type Options struct {
-	Secret     string
-	HeaderName string
-	Algorithm  string // "sha256" (default), "sha1", "sha512"
+	Secret           string
+	HeaderName       string
+	Algorithm        string              // "sha256" (default), "sha1", "sha512"
+	SignatureHeaders map[string][]string // private sidecar; never serialized into an event
 }
 
 // Result holds the verification outcome.
@@ -89,16 +90,25 @@ func Verify(ev *event.Event, opts Options) (*Result, error) {
 	// Determine header to check
 	targetHeader := strings.TrimSpace(opts.HeaderName)
 	var headerVal string
-
 	if targetHeader != "" {
-		headerVal = ev.GetHeader(targetHeader)
+		headerVal = getHeader(opts.SignatureHeaders, targetHeader)
+		if headerVal == "" {
+			headerVal = ev.GetHeader(targetHeader) // legacy unredacted events
+		}
 	} else {
-		// Auto-detect common signature headers
 		for _, candidate := range autoSignatureHeaders {
-			if val := ev.GetHeader(candidate); val != "" {
-				targetHeader = candidate
-				headerVal = val
+			if val := getHeader(opts.SignatureHeaders, candidate); val != "" {
+				targetHeader, headerVal = candidate, val
 				break
+			}
+			if val := ev.GetHeader(candidate); val != "" {
+				if val != "[REDACTED]" {
+					targetHeader, headerVal = candidate, val
+					break
+				}
+				if targetHeader == "" {
+					targetHeader, headerVal = candidate, val
+				}
 			}
 		}
 	}
@@ -114,14 +124,27 @@ func Verify(ev *event.Event, opts Options) (*Result, error) {
 			matched = true
 		}
 	}
+	received := "[MISSING]"
+	if headerVal != "" {
+		received = "[REDACTED]"
+	}
 
 	return &Result{
 		EventID:             ev.ID,
 		HeaderName:          targetHeader,
-		ReceivedHeaderValue: headerVal,
+		ReceivedHeaderValue: received,
 		Algorithm:           algo,
 		ComputedHex:         computedHex,
 		ComputedBase64:      computedBase64,
 		Matched:             matched,
 	}, nil
+}
+
+func getHeader(headers map[string][]string, name string) string {
+	for key, vals := range headers {
+		if strings.EqualFold(key, name) && len(vals) > 0 {
+			return vals[0]
+		}
+	}
+	return ""
 }
